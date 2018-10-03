@@ -5,48 +5,46 @@
   <meta http-equiv="Content-Style-Type" content="text/css" />
   <meta name="generator" content="pandoc" />
   <meta name="author" content="Dirk Laurie" />
-  <title>fluor: Forth-right Lua</title>
+  <title>Stacles, or domain-specific virtual machines</title>
   <style type="text/css">code{white-space: pre;}</style>
   <link rel="stylesheet" href="lua-notes.css" type="text/css" />
 </head>
 <body>
 <div id="header">
-<h1 class="title"><code>fluor</code>: Forth-right Lua</h1>
+<h1 class="title">Stacles, or domain-specific virtual machines</h1>
 <h2 class="author">Dirk Laurie</h2>
 <h3 class="date">October 2018</h3>
 </div>
 <div id="TOC">
 <ul>
-<li><a href="#overview">Overview</a></li>
-<li><a href="#terminology">Terminology</a></li>
-<li><a href="#an-empty-virtual-machine">An empty virtual machine</a><ul>
-<li><a href="#built-in-vm-methods">Built-in VM methods</a></li>
-<li><a href="#built-in-vm-metamethods">Built-in VM metamethods</a></li>
-<li><a href="#built-in-words">Built-in words</a></li>
-<li><a href="#user-defined-fields-that-affect-the-running-of-the-virtual-machine">User-defined fields that affect the running of the Virtual Machine</a></li>
-<li><a href="#the-run-method">The <code>run</code> method</a></li>
+<li><a href="#overview">Overview</a><ul>
+<li><a href="#forth-like-languages">Forth-like languages</a></li>
 </ul></li>
-<li><a href="#words">Words</a><ul>
-<li><a href="#parser">Parser</a></li>
+<li><a href="#reference">Reference</a><ul>
+<li><a href="#operation-of-the-virtual-machine">Operation of the virtual machine</a></li>
+<li><a href="#user-defined-fields-that-affect-the-running-of-the-virtual-machine">User-defined fields that affect the running of the Virtual Machine</a></li>
+<li><a href="#vm-metamethods">VM metamethods</a></li>
+<li><a href="#vm-methods">VM methods</a></li>
+<li><a href="#built-in-words">Built-in words</a></li>
 </ul></li>
 </ul>
 </div>
 <h1 id="overview">Overview</h1>
-<p>The Lua module <code>fluor</code> consists of the following submodules:</p>
+<p>A <em>stacle</em> is a Lua table specialized to act as a virtual machine (VM) for Forth-like languages, i.e. languages that consist of whitespace-separated<br />
+words, each specifying an action to be taken on a data stack.</p>
+<p>Before going any further, allow me to define a few English words that I use in a specialized way, which might not be exactly what you expect them to mean.</p>
 <dl>
-<dt><code>fluor.vm</code></dt>
-<dd>A constructor for a virtual machine (briefly, VM), comprising a compiler for stack-based, whitespace-separated languages; a mechanism for running compiled code; and a replace-evaluate-print loop for interactive use.
+<dt><strong>array</strong></dt>
+<dd>A Lua table <code>tbl</code> in which all keys except the positive integers are irrelevant.
 </dd>
-<dt><code>fluor.micro</code></dt>
-<dd>A table of primitives for Micro, a very rudimentary Forth-like language.
+<dt><strong>field</strong></dt>
+<dd>A key-value pair with a string-valued key.
 </dd>
-</dl>
-<p>The virtual machine <code>vm</code> is implemented as a callable table that, when called, takes a tuple of actions (defined below) as arguments and returns <code>vm</code>. Most of the actions access only the data stack, which is <code>vm</code> itself seen as a sequence, with its last element <code>vm[#vm]</code> being the top. Some actions access other fields in <code>vm</code>.</p>
-<h1 id="terminology">Terminology</h1>
-<p>Warning to experts: some of these terms look familiar, but might not meant exactly what you expect.</p>
-<dl>
+<dt><strong>tuple</strong></dt>
+<dd>A list of values (usually denoted by <code>...</code>) which may contain nils.
+</dd>
 <dt><strong>method</strong></dt>
-<dd>A function whose first argument is a VM.
+<dd>A function whose first argument is a stacle.
 </dd>
 <dt><strong>item</strong></dt>
 <dd>Any Lua value except a function.
@@ -57,100 +55,51 @@
 <dt><strong>word</strong></dt>
 <dd>A string of non-blank characters associated with an action.
 </dd>
-<dt><strong>tuple</strong></dt>
-<dd>A variable number of values, usually denoted by <code>...</code>, which may contain nil.
+<dt><strong>lexicon</strong></dt>
+<dd>A table whose fields are word-action pairs.
 </dd>
-<dt><strong>array</strong></dt>
-<dd>A Lua table <code>tbl</code> in which all keys except those in the range 1 to <code>#tbl</code> are irrelevant.
-</dd>
-<dt><strong>sequence</strong></dt>
-<dd>A array in which none of the relevant values are nil.
-</dd>
-<dt><strong>field</strong></dt>
-<dd>A key-value pair with a string-valued key.
+<dt><strong>program</strong>*</dt>
+<dd>An array of actions.
 </dd>
 </dl>
-<h1 id="an-empty-virtual-machine">An empty virtual machine</h1>
-<p>Let us explore in an interactive session (Lua 5.3) what an empty VM contains.</p>
-<pre><code>   constructVM = require&quot;fluor.vm&quot;
-   lexicon = {}                         
-   stack = {}
-   vm = constructVM(lexicon,stack)
-   assert(vm == stack)
-   for k in pairs(vm) do print(k) end
-lexicon
-   assert(lexicon == vm.lexicon)
-   mt = getmetatable(vm)
-   index = mt.__index
-   for k in pairs(index) do print(k) end
-run
-parse
-compile
-execute
-REPL
-   assert(mt.__call == index.run)
-   index = getmetatable(index).__index 
-   assert(index == vm.lexicon)
-   for k in pairs(index) do print(k) end  -- (lexicon is empty)
-   index = getmetatable(index).__index
-   for k in pairs(index) do print(k) end 
-concat
-define
-enddef</code></pre>
-<p>Because of inheritance via the <code>__index</code> metamethod, there are four levels at which a value <code>vm.member</code> can be retrieved. A lower level is only queried if no value is found at a higher level. You can therefore &quot;shadow&quot; a built-in method by asssigning a value to the same name at a higher level.</p>
+<p>A stacle <code>vm</code> is its own data stack, with <code>vm[1]</code> at the bottom and <code>vm[#vm]</code> at the top. Thus a stacle can either act as a stack or as a state machine.</p>
+<p>A newly constructed empty stacle has only one field, <code>vm.lexicon</code>, containing a lexicon. Via metamethods, it can also access fields in a table <code>methods</code> (not directly exposed to the user) and failing that, in <code>vm.lexicon</code>.</p>
+<p>The VM mode of a stacle is invoked by <code>vm:execute(program)</code>, which expects a program and returns <code>vm</code>. Very similar is <code>vm:run(...)</code>, which expects a tuple of actions instead of a program. The method <code>vm.run</code> also acts as the call metamethod of a stacle, so that <code>vm(...) and</code>vm:run(...)` do the same.</p>
+<p>When a method is passed as an argument to the VM, the only argument passed to the method will be the stacle itself, and any return values of the method are ignored. The method may actually have more arguments, but should provide sensible default values.</p>
+<p>Here is a basic example.</p>
+<pre><code>stacle = require&quot;stacle.vm&quot;
+vm = stacle{}    -- empty lexicon
+print(vm(&#39;c&#39;,&#39;a&#39;,&#39;b&#39;,table.sort))  --&gt; a b c</code></pre>
+<p>The normal mode of operation of the VM depends on the type of its arguments: an item is pushed to the stack but a method is called immediately. The result being printed is produced by the default <code>__tostring</code> method for a stacle.</p>
+<h2 id="forth-like-languages">Forth-like languages</h2>
+<p>The language understood by a stacle consists of whitespace-separated words, and its lexer is therefore totally trivial. What is non-trivial is the parser, which depends on the lexicon. The output of the parser is a sequence, in which each word <code>token</code> found by the lexer is converted to a Lua value <code>action</code>, in one to three steps, each being taken only if its predecessor fails.</p>
 <ol style="list-style-type: decimal">
-<li>In <code>vm</code> itself. (User-defined VM methods and states.)</li>
-<li>In the <code>__index</code> metamethod of <code>vm</code>. (Built-in VM methods.)</li>
-<li>In <code>lexicon</code>. (User-defined words.)</li>
-<li>In the <code>__index</code> metamethod of <code>lexicon</code>. (Built-in words.)</li>
+<li><code>lexicon[token]</code>, if it exists.</li>
+<li>The result of <code>token</code> as a Lua expression, if its evaluation succeeds, with global variables resolved from the lexicon.<br />
+</li>
+<li>The contents of <code>token</code> as a string.</li>
 </ol>
-<p>The intention is that the user should only modify <code>vm</code> and <code>lexicon</code>. You can enforce this behaviour by locking the metatables (i.e. setting a non-nil <code>_metatable</code> field in them).</p>
-<h2 id="built-in-vm-methods">Built-in VM methods</h2>
-<p>These methods are various ways of activation (parts of) the VM. They are not fields in the VM, but are accessed via the <code>__index</code> of its metatable.</p>
-<dl>
-<dt><code>vm:run(...)</code></dt>
-<dd>Executes the specified tuple of actions. Returns <code>vm</code>. Calling <code>vm(...)</code> is equivalent to <code>vm:run(...)</code>.
-</dd>
-<dt><code>vm:parse&quot;source&quot;</code></dt>
-<dd>Parses the source string. Returns an array of actions, obtained by splitting the string into words and looking them up in <code>vm.lexicon</code>. See <a href="#parser">Parser</a>.
-</dd>
-<dt><code>vm:compile&quot;source&quot;</code></dt>
-<dd>Compiles the source. Returns a function that acts on and returns a sequence, which need not be a VM.
-</dd>
-<dt><code>vm:execute(actions,start,stop)</code></dt>
-<dd>Executes actions[start] to actions[stop]. Defaults are <code>start=1</code> and <code>stop=#actions</code>. The usual caveats about the length operator apply.
-</dd>
-<dt><code>vm:REPL()</code></dt>
-<dd>Interactively compiles and executes lines of code.
-</dd>
-</dl>
-<h2 id="built-in-vm-metamethods">Built-in VM metamethods</h2>
-<dl>
-<dt><code>__tostring</code></dt>
-<dd>Returns the stack contents. Shadowed by a <code>tostring</code> user-defined VM method.
-</dd>
-<dt><code>__len</code></dt>
-<dd>Returns the raw length of the stack, unless a user-defined VM state named <code>top</code> is found, which must be a number.
-</dd>
-</dl>
-<h2 id="built-in-words">Built-in words</h2>
-<dl>
-<dt><code>define(stack)</code></dt>
-<dd>Prepares definition of a new word. Never called; used only as a sentinel by the VM.
-</dd>
-<dt><code>enddef(stack)</code></dt>
-<dd>Finishes definition of a new word. Never called; used only as a sentinel by the VM.
-</dd>
-<dt><code>concat(stack)</code></dt>
-<dd>Returns a string representation of the stack.
-</dd>
-<dt><code>clear(stack,from,to)</code></dt>
-<dd>Removes <code>stack[from],stack[from+1],...,stack[to]</code>. Default arguments are <code>from=1</code> and <code>to=#stack</code>. Return values are the removed elements.
-</dd>
-<dt><code>pop(stack,count)</code></dt>
-<dd>Removes the last <code>count</code> values from the stack. Default is <code>count=1</code>. Return values are the removed elements.
-</dd>
-</dl>
+<p>The function <code>vm:parse(source)</code> lexes and parses a source string, returning a program.</p>
+<p>Here is a tiny Forth-like lexicon, assuming we still have <code>vm</code> from the previous.</p>
+<pre><code>forth = {DROP=vm.pop, CLEAR=vm.erase, SORT=table.sort, [&#39;:&#39;]=vm.define,
+  [&#39;;&#39;]=vm.enddef}
+vm.lexicon = forth
+vm:execute(vm:parse&quot;CLEAR c a b SORT&quot;)  --&gt; a b c</code></pre>
+<p>The function <code>vm:compile()</code> goes further and returns a method, which can in fact be applied to any sequence, not merely to a stacle.</p>
+<pre><code>sorted = vm:compile&quot;SORT&quot;
+tbl = sorted {2,4,1,3}  --&gt; tbl === {1,2,3,4}</code></pre>
+<h1 id="reference">Reference</h1>
+<h2 id="operation-of-the-virtual-machine">Operation of the virtual machine</h2>
+<p><code>vm:execute(program)</code> processes the actions in <code>program</code> one after the other. What happens depends on the state of <code>vm</code>, the type of the action, and whether the action is one of the two predefined methods <code>define</code> and <code>enddef</code>.</p>
+<p>When called, <code>vm</code> may set fields in <code>vm.lexicon</code>. It acts on the fields <code>vm.aborting</code> and <code>vm.donil</code>, if present, without itself setting them.</p>
+<ul>
+<li>If <code>vm.aborting</code> is true, the machine halts and returns.</li>
+<li>If the action is <code>define</code>, defining mode is entered. The first action after that must be the word being defined. All actions after that are not acted on but appended to the new definition, until the action <code>enddef</code> is found. The newly defined word is added to the lexicon.</li>
+<li>If the action is nil, <code>vm.donil</code> is called if it exists, otherwise nothing happens.</li>
+<li>If the action is a function, it is assumed to be a method and is called.</li>
+<li>Otherwise the action is pushed on the data stack.</li>
+</ul>
+<p>Only the first argument of a method is used by the VM. A method may for other purposes have more arguments, and may return values, but these are ignored by the VM.</p>
 <h2 id="user-defined-fields-that-affect-the-running-of-the-virtual-machine">User-defined fields that affect the running of the Virtual Machine</h2>
 <dl>
 <dt><code>vm.lexicon</code></dt>
@@ -169,43 +118,57 @@ enddef</code></pre>
 <dd>a boolean to be set <code>true</code> by an action that intends to stop the machine.
 </dd>
 </dl>
-<h2 id="the-run-method">The <code>run</code> method</h2>
-<p><code>vm</code> processes its arguments one after the other. What happens depends on the state of <code>vm</code>, the type of the action, and whether the action is one of the two predefined methods <code>define</code> and <code>enddef</code>.</p>
-<p>When called, <code>vm</code> may set fields in <code>vm.lexicon</code>. It acts on the fields <code>vm.aborting</code> and <code>vm.donil</code>, if present, without itself setting them.</p>
-<ul>
-<li>If <code>vm.aborting</code> is true, the machine halts and returns.</li>
-<li>If the action is <code>define</code>, defining mode is entered. The first action after that must be the word being defined. All actions after that are not acted on but appended to the new definition, until the action <code>enddef</code> is found. The newly defined word is added to the lexicon.</li>
-<li>If the action is nil, <code>vm.donil</code> is called if it exists, otherwise nothing happens.</li>
-<li>If the action is a function, it is assumed to be a method and is called.</li>
-<li>Otherwise the action is pushed on the data stack.</li>
-</ul>
-<p>Only the first argument of a method is used by the VM. A method may for other purposes have more arguments, and may return values, but these are ignored by the VM.</p>
-<h1 id="words">Words</h1>
-<p>There are two kinds of words: <em>primitive</em> words, which you define in Lua, and <em>derived</em> words, which you define via the VM.</p>
-<p>Let's define two primitive words. Note the comments showing the stack top before and after. Putting in such comments is sound Forth practice.</p>
-<pre><code>add = function(stack)  -- { a b -- a+b }
-    local n = #stack
-    stack[n-1], stack[n] = stack[n-1] + stack[n]
-  end;
-mul = function(stack)  -- { a b -- a-b }
-    local n = #stack
-    stack[n-1], stack[n] = stack[n-1] * stack[n]
-  end;</code></pre>
-<p>Now a derived word.</p>
-<pre><code>vm(vm.define,&quot;accum&quot;,mul,add,vm.enddef)</code></pre>
-<p>Let's test it.</p>
-<pre><code>vm(7,11,13,vm.accum)  --&gt; 150</code></pre>
-<p>We could also have defined the word via the VM's compiler. But before we can do that, <code>add</code> and <code>mul</code> must go into the lexicon.</p>
-<pre><code>X = vm.lexicon; X.add, X.mul = add, mul
-accum = vm:compile&quot;mul add&quot;
-vm(vm.clear,7,11,13,accum)  </code></pre>
-<h2 id="parser">Parser</h2>
-<p>The parser regards the source code as words delimited by wordspace. These words are translated into actions as follows:</p>
-<ol style="list-style-type: decimal">
-<li>If the word is in the lexicon, its corresponding value is the action.</li>
-<li>If the word can successfully be evaluated as a Lua expression, with globals resolved from the lexicon, that value is the action.</li>
-<li>Otherwise the word itself, as a string, is the action.</li>
-</ol>
-<p>The difference between <code>parse</code> and <code>compile</code> is only that <code>parse</code> returns an array of actions, whereas <code>compile</code> returns a method that executes them one after the other.</p>
+<h2 id="vm-metamethods">VM metamethods</h2>
+<dl>
+<dt><code>__tostring</code></dt>
+<dd>Returns the stack contents. Shadowed by a <code>tostring</code> user-defined VM method.
+</dd>
+<dt><code>__len</code></dt>
+<dd>Returns the raw length of the stack, unless a user-defined VM state named <code>top</code> is found, which must be a number.
+</dd>
+<dt><code>__index</code></dt>
+<dd>The array <code>methods</code>, which itself has a metamethod to query the lexicon as a last resort.
+</dd>
+</dl>
+<h2 id="vm-methods">VM methods</h2>
+<p>These methods are various ways of activating (parts of) the VM.</p>
+<dl>
+<dt><code>vm:run(...)</code></dt>
+<dd>Executes the specified tuple of actions. Returns <code>vm</code>. Calling <code>vm(...)</code> is equivalent to <code>vm:run(...)</code>.
+</dd>
+<dt><code>vm:parse&quot;source&quot;</code></dt>
+<dd>Parses the source string. Returns an array of actions, obtained by splitting the string into words and looking them up in <code>vm.lexicon</code>. See <a href="#parser">Parser</a>.
+</dd>
+<dt><code>vm:compile&quot;source&quot;</code></dt>
+<dd>Compiles the source. Returns a function that acts on and returns a sequence, which need not be a VM.
+</dd>
+<dt><code>vm:execute(actions,start,stop)</code></dt>
+<dd>Executes actions[start] to actions[stop]. Defaults are <code>start=1</code> and <code>stop=#actions</code>. The usual caveats about the length operator apply.
+</dd>
+<dt><code>vm:REPL()</code></dt>
+<dd>Interactively compiles and executes lines of code.
+</dd>
+</dl>
+<h2 id="built-in-words">Built-in words</h2>
+<p>These words are all functions, designed to be used as actions in a lexicon.</p>
+<p>In the case of <code>define</code> and <code>enddef</code>, the work is not actually done by the function itself, but an internal function of by the virtual machine.</p>
+<p>The other functions can be called directly from Lua, in which case non-default arguments can be supplied.</p>
+<dl>
+<dt><code>define(stack)</code></dt>
+<dd>Prepares definition of a new word. Never called; used only as a sentinel by the VM.
+</dd>
+<dt><code>enddef(stack)</code></dt>
+<dd>Finishes definition of a new word. Never called; used only as a sentinel by the VM.
+</dd>
+<dt><code>concat(stack,delim,from,to)</code></dt>
+<dd>Returns a string representation of the stack. Default arguments are <code>delim=' '</code>, <code>from=1</code> and <code>to=#stack</code>.
+</dd>
+<dt><code>clear(stack,from,to)</code></dt>
+<dd>Removes <code>stack[from],stack[from+1],...,stack[to]</code>. Default arguments are <code>from=1</code> and <code>to=#stack</code>. Return values are the removed elements.
+</dd>
+<dt><code>pop(stack,count)</code></dt>
+<dd>Removes the last <code>count</code> values from the stack. Default is <code>count=1</code>. Return values are the removed elements.
+</dd>
+</dl>
 </body>
 </html>
